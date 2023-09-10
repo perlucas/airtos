@@ -1,0 +1,7 @@
+/Lib
+/Include
+/Scripts
+/share
+*/__pycache__/
+/v3_stable-baselines/models
+/v4_stable-baselines/models
