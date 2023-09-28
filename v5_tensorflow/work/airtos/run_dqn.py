@@ -23,7 +23,12 @@ from tf_agents.trajectories import trajectory
 from tf_agents.specs import tensor_spec
 from tf_agents.utils import common
 
-from envs import MacdEnv, AdxEnv, RsiEnv, MovingAverageEnv, CombinedEnv
+from envs.macd_env import MacdEnv
+from envs.adx_env import AdxEnv
+from envs.rsi_env import RsiEnv
+from envs.moving_average_env import MovingAverageEnv
+from envs.combined_env import CombinedEnv
+
 from utils import load_dataset
 
 import sys
