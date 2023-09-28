@@ -1,0 +1,11 @@
+services:
+
+  jupyter:
+    image: jupyter/tensorflow-notebook
+    user: "root"
+    environment:
+      GRANT_SUDO: "yes"
+    volumes:
+      - ./work:/home/jovyan/work
+    ports:
+      - 8888:8888
