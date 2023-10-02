@@ -1,8 +1,0 @@
-pip install pyglet
-
-sudo apt-get update
-pip install dm-reverb[tensorflow]
-pip install tf-agents[reverb]
-pip install pandas
-pip install numpy
-pip install pandas_ta

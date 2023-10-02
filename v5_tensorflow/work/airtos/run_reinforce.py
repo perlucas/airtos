@@ -8,23 +8,25 @@ import numpy as np
 import reverb
 import tensorflow as tf
 
-from tf_agents.agents.dqn import dqn_agent
+from tf_agents.agents.reinforce import reinforce_agent
 from tf_agents.drivers import py_driver
 from tf_agents.environments import suite_gym
 from tf_agents.environments import tf_py_environment
-from tf_agents.eval import metric_utils
-from tf_agents.metrics import tf_metrics
-from tf_agents.networks import sequential
+from tf_agents.networks import actor_distribution_network
 from tf_agents.policies import py_tf_eager_policy
-from tf_agents.policies import random_tf_policy
 from tf_agents.replay_buffers import reverb_replay_buffer
 from tf_agents.replay_buffers import reverb_utils
-from tf_agents.trajectories import trajectory
 from tf_agents.specs import tensor_spec
+from tf_agents.trajectories import trajectory
 from tf_agents.utils import common
+from tf_agents.policies import random_tf_policy
 
-from envs import MacdEnv, AdxEnv, RsiEnv, MovingAverageEnv, CombinedEnv
-from envs.trading_env_ext import TradingEnv
+from envs.macd_env import MacdEnv
+from envs.adx_env import AdxEnv
+from envs.rsi_env import RsiEnv
+from envs.moving_average_env import MovingAverageEnv
+from envs.combined_env import CombinedEnv
+
 from utils import load_dataset
 
 import sys
@@ -32,14 +34,14 @@ import sys
 
 def layers_cfg(id: str):
     return {
-        'v1': (100, 50),
-        'v2': (100, 100),
-        'v3': (50, 50),
-        'v4': (50, 100),
+        'v1': (50,),
+        'v2': (100,),
+        'v3': (100, 50),
+        'v4': (100, 100),
     }.get(id)
 
 
-DEFINED_ENVS = ['macd', 'rsi', 'adx', 'mix', 'mas']
+DEFINED_ENVS = ['macd', 'rsi', 'adx', 'mas']
 
 
 def parse_args(args_arr):
@@ -78,38 +80,34 @@ def create_environments(env_type: str, filename: str):
     window_size = 10
     train_bounds = (10, 2000)
     eval_bounds = (2000, 2500)
-    return (
-        TradingEnv(df=df, window_size=window_size, frame_bound=train_bounds),
-        TradingEnv(df=df, window_size=window_size, frame_bound=eval_bounds)
-    )
 
-    # if env_type == 'macd':
-    #     train_env = MacdEnv(df=df, window_size=window_size,
-    #                         frame_bound=train_bounds)
-    #     eval_env = MacdEnv(df=df, window_size=window_size,
-    #                        frame_bound=eval_bounds)
-    # elif env_type == 'rsi':
-    #     train_env = RsiEnv(df=df, window_size=window_size,
-    #                        frame_bound=train_bounds)
-    #     eval_env = RsiEnv(df=df, window_size=window_size,
-    #                       frame_bound=eval_bounds)
-    # elif env_type == 'adx':
-    #     train_env = AdxEnv(df=df, window_size=window_size,
-    #                        frame_bound=train_bounds)
-    #     eval_env = AdxEnv(df=df, window_size=window_size,
-    #                       frame_bound=eval_bounds)
-    # elif env_type == 'mas':
-    #     train_env = MovingAverageEnv(
-    #         df=df, window_size=window_size, frame_bound=train_bounds)
-    #     eval_env = MovingAverageEnv(
-    #         df=df, window_size=window_size, frame_bound=eval_bounds)
-    # else:
-    #     train_env = CombinedEnv(
-    #         df=df, window_size=window_size, frame_bound=train_bounds)
-    #     eval_env = CombinedEnv(
-    #         df=df, window_size=window_size, frame_bound=eval_bounds)
+    if env_type == 'macd':
+        train_env = MacdEnv(df=df, window_size=window_size,
+                            frame_bound=train_bounds)
+        eval_env = MacdEnv(df=df, window_size=window_size,
+                           frame_bound=eval_bounds)
+    elif env_type == 'rsi':
+        train_env = RsiEnv(df=df, window_size=window_size,
+                           frame_bound=train_bounds)
+        eval_env = RsiEnv(df=df, window_size=window_size,
+                          frame_bound=eval_bounds)
+    elif env_type == 'adx':
+        train_env = AdxEnv(df=df, window_size=window_size,
+                           frame_bound=train_bounds)
+        eval_env = AdxEnv(df=df, window_size=window_size,
+                          frame_bound=eval_bounds)
+    elif env_type == 'mas':
+        train_env = MovingAverageEnv(
+            df=df, window_size=window_size, frame_bound=train_bounds)
+        eval_env = MovingAverageEnv(
+            df=df, window_size=window_size, frame_bound=eval_bounds)
+    else:
+        train_env = CombinedEnv(
+            df=df, window_size=window_size, frame_bound=train_bounds)
+        eval_env = CombinedEnv(
+            df=df, window_size=window_size, frame_bound=eval_bounds)
 
-    # return (train_env, eval_env)
+    return (train_env, eval_env)
 
 
 # ====================================== Parse arguments and extract params ======================================
@@ -120,8 +118,8 @@ num_iterations, learning_rate, env_type, agent_layers, run_id = parse_args(
 
 # num_iterations = 50000
 initial_collect_steps = 1000
-collect_steps_per_iteration = 5
-replay_buffer_max_length = 100000
+collect_episodes_per_iteration = 5
+replay_buffer_max_length = 10000
 batch_size = 64
 # learning_rate = 0.003
 log_interval = 1000
@@ -136,48 +134,25 @@ train_env = tf_py_environment.TFPyEnvironment(train_py_env)
 eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
 
 
-# ====================================== Create DQN Agent ======================================
+# ====================================== Create REINFORCE Agent ======================================
 # fc_layer_params = (100, 50)
 fc_layer_params = agent_layers
-action_tensor_spec = tensor_spec.from_spec(train_py_env.action_spec())
-num_actions = action_tensor_spec.maximum - action_tensor_spec.minimum + 1
-
-# Define a helper function to create Dense layers configured with the right
-# activation and kernel initializer.
-
-
-def dense_layer(num_units):
-    return tf.keras.layers.Dense(
-        num_units,
-        activation=tf.keras.activations.relu,
-        kernel_initializer=tf.keras.initializers.VarianceScaling(
-            scale=2.0, mode='fan_in', distribution='truncated_normal'))
-
-
-# QNetwork consists of a sequence of Dense layers followed by a dense layer
-# with `num_actions` units to generate one q_value per available action as
-# its output.
-dense_layers = [dense_layer(num_units) for num_units in fc_layer_params]
-q_values_layer = tf.keras.layers.Dense(
-    num_actions,
-    activation=None,
-    kernel_initializer=tf.keras.initializers.RandomUniform(
-        minval=-0.03, maxval=0.03),
-    bias_initializer=tf.keras.initializers.Constant(-0.2))
-q_net = sequential.Sequential(dense_layers + [q_values_layer])
+actor_net = actor_distribution_network.ActorDistributionNetwork(
+    train_env.observation_spec(),
+    train_env.action_spec(),
+    fc_layer_params=fc_layer_params)
 
 # ====================================== Create Optimizer ======================================
 optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 train_step_counter = tf.Variable(0)
 
-agent = dqn_agent.DqnAgent(
+agent = reinforce_agent.ReinforceAgent(
     train_env.time_step_spec(),
     train_env.action_spec(),
-    q_network=q_net,
+    actor_network=actor_net,
     optimizer=optimizer,
-    td_errors_loss_fn=common.element_wise_squared_loss,
+    normalize_returns=True,
     train_step_counter=train_step_counter)
-
 agent.initialize()
 
 # ====================================== Helper for Avg Return ======================================
@@ -224,29 +199,22 @@ replay_buffer = reverb_replay_buffer.ReverbReplayBuffer(
     sequence_length=2,
     local_server=reverb_server)
 
-rb_observer = reverb_utils.ReverbAddTrajectoryObserver(
+rb_observer = reverb_utils.ReverbAddEpisodeObserver(
     replay_buffer.py_client,
     table_name,
-    sequence_length=2)
+    replay_buffer_max_length
+)
 
 
 # ====================================== Collect Data ======================================
-random_policy = random_tf_policy.RandomTFPolicy(train_env.time_step_spec(),
-                                                train_env.action_spec())
-
-py_driver.PyDriver(
-    train_py_env,
-    py_tf_eager_policy.PyTFEagerPolicy(
-        random_policy, use_tf_function=True),
-    [rb_observer],
-    max_steps=initial_collect_steps).run(train_py_env.reset())
-
-dataset = replay_buffer.as_dataset(
-    num_parallel_calls=3,
-    sample_batch_size=batch_size,
-    num_steps=2).prefetch(3)
-
-iterator = iter(dataset)
+def collect_episode(environment, policy, num_episodes):
+    driver = py_driver.PyDriver(
+        environment,
+        py_tf_eager_policy.PyTFEagerPolicy(policy, use_tf_function=True),
+        [rb_observer],
+        max_episodes=num_episodes)
+    initial_time_step = environment.reset()
+    driver.run(initial_time_step)
 
 # ====================================== Training Loop ======================================
 # try:
@@ -264,25 +232,18 @@ agent.train_step_counter.assign(0)
 avg_return = compute_avg_return(eval_env, agent.policy, num_eval_episodes)
 returns = [avg_return]
 
-# Reset the environment.
-time_step = train_py_env.reset()
-
-# Create a driver to collect experience.
-collect_driver = py_driver.PyDriver(
-    train_py_env,
-    py_tf_eager_policy.PyTFEagerPolicy(
-        agent.collect_policy, use_tf_function=True),
-    [rb_observer],
-    max_steps=collect_steps_per_iteration)
-
 for _ in range(num_iterations):
 
     # Collect a few steps and save to the replay buffer.
-    time_step, _ = collect_driver.run(time_step)
+    collect_episode(
+      train_py_env, agent.collect_policy, collect_episodes_per_iteration)
 
     # Sample a batch of data from the buffer and update the agent's network.
-    experience, unused_info = next(iterator)
-    train_loss = agent.train(experience).loss
+    iterator = iter(replay_buffer.as_dataset(sample_batch_size=1))
+    trajectories, _ = next(iterator)
+    train_loss = agent.train(experience=trajectories)  
+
+    replay_buffer.clear()
 
     step = agent.train_step_counter.numpy()
 
