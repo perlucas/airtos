@@ -67,49 +67,62 @@ def parse_args(args_arr):
         elif s.startswith('LAYERS='):
             agent_layers = layers_cfg(s.removeprefix('LAYERS='))
             agent_layers_str = s.removeprefix('LAYERS=')
+        elif s.startswith('ID='):
+            run_id = s.removeprefix('ID=')
 
     assert type(num_iterations) == int and num_iterations > 0
     assert type(learning_rate) == float and learning_rate > 0
     assert env_type in DEFINED_ENVS
     assert type(agent_layers) == tuple and len(agent_layers) > 0
 
-    run_id = f'{num_iterations}_{env_type}_{agent_layers_str}_{learning_rate_str}'
+    if run_id == None:
+        run_id = f'{num_iterations}_{env_type}_{agent_layers_str}_{learning_rate_str}'
+
     return (num_iterations, learning_rate, env_type, agent_layers, run_id)
 
 
-def create_environments(env_type: str, filename: str):
-    df = load_dataset(filename)
-    window_size = 10
-    train_bounds = (10, 2000)
-    eval_bounds = (2000, 2500)
-
+def create_env(env_type: str, df, window_size, frame_bound):
     if env_type == 'macd':
-        train_env = MacdEnv(df=df, window_size=window_size,
-                            frame_bound=train_bounds)
-        eval_env = MacdEnv(df=df, window_size=window_size,
-                           frame_bound=eval_bounds)
-    elif env_type == 'rsi':
-        train_env = RsiEnv(df=df, window_size=window_size,
-                           frame_bound=train_bounds)
-        eval_env = RsiEnv(df=df, window_size=window_size,
-                          frame_bound=eval_bounds)
-    elif env_type == 'adx':
-        train_env = AdxEnv(df=df, window_size=window_size,
-                           frame_bound=train_bounds)
-        eval_env = AdxEnv(df=df, window_size=window_size,
-                          frame_bound=eval_bounds)
-    elif env_type == 'mas':
-        train_env = MovingAverageEnv(
-            df=df, window_size=window_size, frame_bound=train_bounds)
-        eval_env = MovingAverageEnv(
-            df=df, window_size=window_size, frame_bound=eval_bounds)
-    else:
-        train_env = CombinedEnv(
-            df=df, window_size=window_size, frame_bound=train_bounds)
-        eval_env = CombinedEnv(
-            df=df, window_size=window_size, frame_bound=eval_bounds)
+        return MacdEnv(df=df, window_size=window_size, frame_bound=frame_bound)
 
-    return (train_env, eval_env)
+    if env_type == 'rsi':
+        return RsiEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    if env_type == 'adx':
+        return AdxEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    if env_type == 'mas':
+        return MovingAverageEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    raise NotImplementedError('unknown type')
+
+
+def create_training_envs(env_type: str):
+    ko_df = load_dataset('./resources/KO.csv')
+    amzn_df = load_dataset('./resources/AMZN.csv')
+    window_size = 10
+
+    return [
+        # KO training envs
+        create_env(env_type, ko_df, window_size, (10, 120)),
+        create_env(env_type, ko_df, window_size, (120, 230)),
+        create_env(env_type, ko_df, window_size, (230, 350)),
+        create_env(env_type, ko_df, window_size, (1000, 1120)),
+        create_env(env_type, ko_df, window_size, (1300, 1400)),
+
+        # AMZN training envs
+        create_env(env_type, amzn_df, window_size, (10, 120)),
+        create_env(env_type, amzn_df, window_size, (120, 230)),
+        create_env(env_type, amzn_df, window_size, (230, 350)),
+        create_env(env_type, amzn_df, window_size, (1000, 1120)),
+        create_env(env_type, amzn_df, window_size, (1300, 1400)),
+    ]
+
+
+def create_testing_env(env_type: str):
+    ko_df = load_dataset('./resources/KO.csv')
+    window_size = 10
+    return create_env(env_type, ko_df, window_size, (2000, 2300))
 
 
 # ====================================== Parse arguments and extract params ======================================
@@ -120,7 +133,7 @@ num_iterations, learning_rate, env_type, agent_layers, run_id = parse_args(
 
 # num_iterations = 50000
 initial_collect_steps = 1000
-collect_steps_per_iteration = 5
+collect_steps_per_iteration = 60
 replay_buffer_max_length = 100000
 batch_size = 64
 # learning_rate = 0.003
@@ -130,11 +143,12 @@ eval_interval = 10000
 
 
 # ====================================== Create environments ======================================
-dataset_file = './resources/KO.csv'
-train_py_env, eval_py_env = create_environments(env_type, dataset_file)
-train_env = tf_py_environment.TFPyEnvironment(train_py_env)
-eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
 
+train_py_envs = create_training_envs(env_type)
+train_env_sample = tf_py_environment.TFPyEnvironment(train_py_envs[0])
+
+eval_py_env = create_testing_env(env_type)
+eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
 
 # ====================================== Create DQN Agent ======================================
 # fc_layer_params = (100, 50)
@@ -171,8 +185,8 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 train_step_counter = tf.Variable(0)
 
 agent = dqn_agent.DqnAgent(
-    train_env.time_step_spec(),
-    train_env.action_spec(),
+    train_env_sample.time_step_spec(),
+    train_env_sample.action_spec(),
     q_network=q_net,
     optimizer=optimizer,
     td_errors_loss_fn=common.element_wise_squared_loss,
@@ -231,8 +245,8 @@ rb_observer = reverb_utils.ReverbAddTrajectoryObserver(
 
 
 # ====================================== Collect Data ======================================
-random_policy = random_tf_policy.RandomTFPolicy(train_env.time_step_spec(),
-                                                train_env.action_spec())
+random_policy = random_tf_policy.RandomTFPolicy(train_env_sample.time_step_spec(),
+                                                train_env_sample.action_spec())
 
 py_driver.PyDriver(
     train_py_env,
@@ -264,36 +278,50 @@ agent.train_step_counter.assign(0)
 avg_return = compute_avg_return(eval_env, agent.policy, num_eval_episodes)
 returns = [avg_return]
 
-# Reset the environment.
-time_step = train_py_env.reset()
+# TODO: assign initial env to train_py_env
 
-# Create a driver to collect experience.
-collect_driver = py_driver.PyDriver(
-    train_py_env,
-    py_tf_eager_policy.PyTFEagerPolicy(
-        agent.collect_policy, use_tf_function=True),
-    [rb_observer],
-    max_steps=collect_steps_per_iteration)
+current_env = 0
+train_py_env = train_py_envs[current_env]
 
-for _ in range(num_iterations):
+iterations_per_env = np.floor(num_iterations / len(train_py_envs))
+current_iteration = 0
+while current_iteration < num_iterations:
 
-    # Collect a few steps and save to the replay buffer.
-    time_step, _ = collect_driver.run(time_step)
+    # Reset the environment.
+    time_step = train_py_env.reset()
 
-    # Sample a batch of data from the buffer and update the agent's network.
-    experience, unused_info = next(iterator)
-    train_loss = agent.train(experience).loss
+    # Create a driver to collect experience.
+    collect_driver = py_driver.PyDriver(
+        train_py_env,
+        py_tf_eager_policy.PyTFEagerPolicy(
+            agent.collect_policy, use_tf_function=True),
+        [rb_observer],
+        max_steps=collect_steps_per_iteration)
 
-    step = agent.train_step_counter.numpy()
+    for _ in range(iterations_per_env):
 
-    if step % log_interval == 0:
-        print('step = {0}: loss = {1}'.format(step, train_loss))
+        # Collect a few steps and save to the replay buffer.
+        time_step, _ = collect_driver.run(time_step)
 
-    if step % eval_interval == 0:
-        avg_return = compute_avg_return(
-            eval_env, agent.policy, num_eval_episodes)
-        print('step = {0}: Average Return = {1}'.format(step, avg_return))
-        returns.append(avg_return)
+        # Sample a batch of data from the buffer and update the agent's network.
+        experience, unused_info = next(iterator)
+        train_loss = agent.train(experience).loss
+
+        step = agent.train_step_counter.numpy()
+
+        if step % log_interval == 0:
+            print('step = {0}: loss = {1}'.format(step, train_loss))
+
+        if step % eval_interval == 0:
+            avg_return = compute_avg_return(
+                eval_env, agent.policy, num_eval_episodes)
+            print('step = {0}: Average Return = {1}'.format(step, avg_return))
+            returns.append(avg_return)
+
+        current_iteration += 1
+
+    current_env += 1
+    train_py_env = train_py_envs[current_env]
 
 
 # ====================================== See Avg Return ======================================
