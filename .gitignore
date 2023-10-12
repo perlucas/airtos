@@ -5,3 +5,7 @@
 **/__pycache__/
 /v3_stable-baselines/models
 /v4_stable-baselines/models
+/pdf_gen/dqn
+/pdf_gen/reinforce
+/pdf_gen/c51
+/pdf_gen/*.tar.gz

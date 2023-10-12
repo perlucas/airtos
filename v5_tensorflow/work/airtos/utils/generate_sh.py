@@ -7,19 +7,13 @@ ALGORITHMS = ['macd', 'rsi', 'adx', 'mas']
 
 LAYERS = ['v1', 'v2', 'v3', 'v4']
 
-NUM_ITERATIONS = 200000
+NUM_ITERATIONS = 35000000
 
-SCRIPT_NAME = 'run_c51.py'
+SCRIPT_NAME = 'run_ppo.py'
 
 OUTPUT_FILE = 'train.sh'
 
 file_contents = """# !bin/sh
-
-#sudo apt-get update
-#pip install tf-agents
-#pip install numpy
-#pip install pandas
-#pip install pandas_ta
 
 echo 'Will start to run through each execution'
 """

@@ -117,14 +117,14 @@ num_iterations, learning_rate, env_type, agent_layers, run_id = parse_args(
     args)
 
 # num_iterations = 50000
-initial_collect_steps = 1000
+# initial_collect_steps = 1000
 collect_episodes_per_iteration = 5
-replay_buffer_max_length = 10000
-batch_size = 64
+replay_buffer_max_length = 2000
+# batch_size = 64
 # learning_rate = 0.003
-log_interval = 1000
+log_interval = 25
 num_eval_episodes = 10
-eval_interval = 10000
+eval_interval = 50
 
 
 # ====================================== Create environments ======================================
@@ -196,7 +196,7 @@ reverb_server = reverb.Server([table])
 replay_buffer = reverb_replay_buffer.ReverbReplayBuffer(
     agent.collect_data_spec,
     table_name=table_name,
-    sequence_length=2,
+    sequence_length=None,
     local_server=reverb_server)
 
 rb_observer = reverb_utils.ReverbAddEpisodeObserver(
@@ -248,7 +248,7 @@ for _ in range(num_iterations):
     step = agent.train_step_counter.numpy()
 
     if step % log_interval == 0:
-        print('step = {0}: loss = {1}'.format(step, train_loss))
+        print('step = {0}: loss = {1}'.format(step, train_loss.loss))
 
     if step % eval_interval == 0:
         avg_return = compute_avg_return(
