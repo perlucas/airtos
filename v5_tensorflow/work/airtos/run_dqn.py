@@ -40,6 +40,8 @@ def layers_cfg(id: str):
         'v2': (100, 100),
         'v3': (50, 50),
         'v4': (50, 100),
+        'v5': (100, 100, 50),
+        'v6': (150, 200),
     }.get(id)
 
 
@@ -153,7 +155,7 @@ eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
 # ====================================== Create DQN Agent ======================================
 # fc_layer_params = (100, 50)
 fc_layer_params = agent_layers
-action_tensor_spec = tensor_spec.from_spec(train_py_env.action_spec())
+action_tensor_spec = tensor_spec.from_spec(train_py_envs[0].action_spec())
 num_actions = action_tensor_spec.maximum - action_tensor_spec.minimum + 1
 
 # Define a helper function to create Dense layers configured with the right
@@ -249,11 +251,11 @@ random_policy = random_tf_policy.RandomTFPolicy(train_env_sample.time_step_spec(
                                                 train_env_sample.action_spec())
 
 py_driver.PyDriver(
-    train_py_env,
+    train_py_envs[0],
     py_tf_eager_policy.PyTFEagerPolicy(
         random_policy, use_tf_function=True),
     [rb_observer],
-    max_steps=initial_collect_steps).run(train_py_env.reset())
+    max_steps=initial_collect_steps).run(train_py_envs[0].reset())
 
 dataset = replay_buffer.as_dataset(
     num_parallel_calls=3,
@@ -283,7 +285,7 @@ returns = [avg_return]
 current_env = 0
 train_py_env = train_py_envs[current_env]
 
-iterations_per_env = np.floor(num_iterations / len(train_py_envs))
+iterations_per_env = int(np.floor(num_iterations / len(train_py_envs)))
 current_iteration = 0
 while current_iteration < num_iterations:
 
@@ -321,7 +323,7 @@ while current_iteration < num_iterations:
         current_iteration += 1
 
     current_env += 1
-    train_py_env = train_py_envs[current_env]
+    train_py_env = train_py_envs[current_env % len(train_py_envs)]
 
 
 # ====================================== See Avg Return ======================================
