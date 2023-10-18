@@ -63,14 +63,62 @@ def parse_args(args_arr):
         elif s.startswith('LAYERS='):
             agent_layers = layers_cfg(s.removeprefix('LAYERS='))
             agent_layers_str = s.removeprefix('LAYERS=')
+        elif s.startswith('ID='):
+            run_id = s.removeprefix('ID=')
 
     assert type(num_iterations) == int and num_iterations > 0
     assert type(learning_rate) == float and learning_rate > 0
     assert env_type in DEFINED_ENVS
     assert type(agent_layers) == tuple and len(agent_layers) > 0
 
-    run_id = f'{num_iterations}_{env_type}_{agent_layers_str}_{learning_rate_str}'
+    if run_id == None:
+        run_id = f'{num_iterations}_{env_type}_{agent_layers_str}_{learning_rate_str}'
+
     return (num_iterations, learning_rate, env_type, agent_layers, run_id)
+
+
+def create_env(env_type: str, df, window_size, frame_bound):
+    if env_type == 'macd':
+        return MacdEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    if env_type == 'rsi':
+        return RsiEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    if env_type == 'adx':
+        return AdxEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    if env_type == 'mas':
+        return MovingAverageEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    raise NotImplementedError('unknown type')
+
+
+def create_training_envs(env_type: str):
+    ko_df = load_dataset('./resources/KO.csv')
+    amzn_df = load_dataset('./resources/AMZN.csv')
+    window_size = 10
+
+    return [
+        # KO training envs
+        create_env(env_type, ko_df, window_size, (10, 120)),
+        create_env(env_type, ko_df, window_size, (120, 230)),
+        create_env(env_type, ko_df, window_size, (230, 350)),
+        create_env(env_type, ko_df, window_size, (1000, 1120)),
+        create_env(env_type, ko_df, window_size, (1300, 1400)),
+
+        # AMZN training envs
+        create_env(env_type, amzn_df, window_size, (10, 120)),
+        create_env(env_type, amzn_df, window_size, (120, 230)),
+        create_env(env_type, amzn_df, window_size, (230, 350)),
+        create_env(env_type, amzn_df, window_size, (1000, 1120)),
+        create_env(env_type, amzn_df, window_size, (1300, 1400)),
+    ]
+
+
+def create_testing_env(env_type: str):
+    ko_df = load_dataset('./resources/KO.csv')
+    window_size = 10
+    return create_env(env_type, ko_df, window_size, (2000, 2300))
 
 
 def create_environments(env_type: str, filename: str):
@@ -111,7 +159,7 @@ num_iterations, learning_rate, env_type, agent_layers, run_id = parse_args(
 
 initial_collect_steps = 1000
 collect_steps_per_iteration = 5
-replay_buffer_capacity = 100000
+replay_buffer_capacity = 10000
 batch_size = 64
 
 gamma = 0.99
@@ -127,18 +175,19 @@ eval_interval = 5000
 
 
 # ====================================== Create environments ======================================
-dataset_file = './resources/KO.csv'
-train_py_env, eval_py_env = create_environments(env_type, dataset_file)
-train_env = tf_py_environment.TFPyEnvironment(train_py_env)
-eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
 
+train_py_envs = create_training_envs(env_type)
+train_env_sample = tf_py_environment.TFPyEnvironment(train_py_envs[0])
+
+eval_py_env = create_testing_env(env_type)
+eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
 
 # ====================================== Create C51 Agent and optimizer ======================================
 fc_layer_params = agent_layers
 
 categorical_q_net = categorical_q_network.CategoricalQNetwork(
-    train_env.observation_spec(),
-    train_env.action_spec(),
+    train_env_sample.observation_spec(),
+    train_env_sample.action_spec(),
     num_atoms=num_atoms,
     fc_layer_params=fc_layer_params)
 
@@ -147,8 +196,8 @@ optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate)
 train_step_counter = tf.Variable(0)
 
 agent = categorical_dqn_agent.CategoricalDqnAgent(
-    train_env.time_step_spec(),
-    train_env.action_spec(),
+    train_env_sample.time_step_spec(),
+    train_env_sample.action_spec(),
     categorical_q_network=categorical_q_net,
     optimizer=optimizer,
     min_q_value=min_q_value,
@@ -179,14 +228,15 @@ def compute_avg_return(environment, policy, num_episodes=10):
     avg_return = total_return / num_episodes
     return avg_return.numpy()[0]
 
-random_policy = random_tf_policy.RandomTFPolicy(train_env.time_step_spec(),
-                                                train_env.action_spec())
+
+random_policy = random_tf_policy.RandomTFPolicy(train_env_sample.time_step_spec(),
+                                                train_env_sample.action_spec())
 
 
 # ====================================== Collect Data ======================================
 replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
     data_spec=agent.collect_data_spec,
-    batch_size=train_env.batch_size,
+    batch_size=train_env_sample.batch_size,
     max_length=replay_buffer_capacity)
 
 
@@ -202,7 +252,7 @@ def collect_step(environment, policy):
 
 # Collect initial data
 for _ in range(initial_collect_steps):
-    collect_step(train_env, random_policy)
+    collect_step(train_env_sample, random_policy)
 
 # Dataset generates trajectories with shape [BxTx...] where
 # T = n_step_update + 1.
@@ -228,26 +278,42 @@ agent.train_step_counter.assign(0)
 avg_return = compute_avg_return(eval_env, agent.policy, num_eval_episodes)
 returns = [avg_return]
 
-for _ in range(num_iterations):
 
-    # Collect a few steps using collect_policy and save to the replay buffer.
-    for _ in range(collect_steps_per_iteration):
-        collect_step(train_env, agent.collect_policy)
+current_env = 0
+train_env = tf_py_environment.TFPyEnvironment(train_py_envs[current_env])
+iterations_per_env = int(np.floor(num_iterations / len(train_py_envs)))
+current_iteration = 0
+while current_iteration < num_iterations:
 
-    # Sample a batch of data from the buffer and update the agent's network.
-    experience, unused_info = next(iterator)
-    train_loss = agent.train(experience)
+    for _ in range(iterations_per_env):
+        # Collect a few steps using collect_policy and save to the replay buffer.
+        for _ in range(collect_steps_per_iteration):
+            collect_step(train_env, agent.collect_policy)
 
-    step = agent.train_step_counter.numpy()
+        # Sample a batch of data from the buffer and update the agent's network.
+        experience, unused_info = next(iterator)
+        train_loss = agent.train(experience)
 
-    if step % log_interval == 0:
-        print('step = {0}: loss = {1}'.format(step, train_loss.loss))
+        step = agent.train_step_counter.numpy()
 
-    if step % eval_interval == 0:
-        avg_return = compute_avg_return(
-            eval_env, agent.policy, num_eval_episodes)
-        print('step = {0}: Average Return = {1:.2f}'.format(step, avg_return))
-        returns.append(avg_return)
+        if step % log_interval == 0:
+            print('step = {0}: loss = {1}'.format(step, train_loss.loss))
+
+        if step % eval_interval == 0:
+            avg_return = compute_avg_return(
+                eval_env, agent.policy, num_eval_episodes)
+            print('step = {0}: Average Return = {1:.2f}'.format(
+                step, avg_return))
+            returns.append(avg_return)
+
+        # Increment current iteration counter
+        current_iteration += 1
+
+    # Move to next set of training data
+    current_env += 1
+    train_env = tf_py_environment.TFPyEnvironment(
+        train_py_envs[current_env % len(train_py_envs)])
+
 
 # ====================================== See Avg Return ======================================
 
