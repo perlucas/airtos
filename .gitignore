@@ -9,3 +9,5 @@
 /pdf_gen/reinforce
 /pdf_gen/c51
 /pdf_gen/*.tar.gz
+*.pdf
+*.tar.gz
