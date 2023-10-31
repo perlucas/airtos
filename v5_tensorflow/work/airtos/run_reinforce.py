@@ -65,49 +65,62 @@ def parse_args(args_arr):
         elif s.startswith('LAYERS='):
             agent_layers = layers_cfg(s.removeprefix('LAYERS='))
             agent_layers_str = s.removeprefix('LAYERS=')
+        elif s.startswith('ID='):
+            run_id = s.removeprefix('ID=')
 
     assert type(num_iterations) == int and num_iterations > 0
     assert type(learning_rate) == float and learning_rate > 0
     assert env_type in DEFINED_ENVS
     assert type(agent_layers) == tuple and len(agent_layers) > 0
 
-    run_id = f'{num_iterations}_{env_type}_{agent_layers_str}_{learning_rate_str}'
+    if run_id == None:
+        run_id = f'{num_iterations}_{env_type}_{agent_layers_str}_{learning_rate_str}'
+
     return (num_iterations, learning_rate, env_type, agent_layers, run_id)
 
 
-def create_environments(env_type: str, filename: str):
-    df = load_dataset(filename)
-    window_size = 10
-    train_bounds = (10, 2000)
-    eval_bounds = (2000, 2500)
-
+def create_env(env_type: str, df, window_size, frame_bound):
     if env_type == 'macd':
-        train_env = MacdEnv(df=df, window_size=window_size,
-                            frame_bound=train_bounds)
-        eval_env = MacdEnv(df=df, window_size=window_size,
-                           frame_bound=eval_bounds)
-    elif env_type == 'rsi':
-        train_env = RsiEnv(df=df, window_size=window_size,
-                           frame_bound=train_bounds)
-        eval_env = RsiEnv(df=df, window_size=window_size,
-                          frame_bound=eval_bounds)
-    elif env_type == 'adx':
-        train_env = AdxEnv(df=df, window_size=window_size,
-                           frame_bound=train_bounds)
-        eval_env = AdxEnv(df=df, window_size=window_size,
-                          frame_bound=eval_bounds)
-    elif env_type == 'mas':
-        train_env = MovingAverageEnv(
-            df=df, window_size=window_size, frame_bound=train_bounds)
-        eval_env = MovingAverageEnv(
-            df=df, window_size=window_size, frame_bound=eval_bounds)
-    else:
-        train_env = CombinedEnv(
-            df=df, window_size=window_size, frame_bound=train_bounds)
-        eval_env = CombinedEnv(
-            df=df, window_size=window_size, frame_bound=eval_bounds)
+        return MacdEnv(df=df, window_size=window_size, frame_bound=frame_bound)
 
-    return (train_env, eval_env)
+    if env_type == 'rsi':
+        return RsiEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    if env_type == 'adx':
+        return AdxEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    if env_type == 'mas':
+        return MovingAverageEnv(df=df, window_size=window_size, frame_bound=frame_bound)
+
+    raise NotImplementedError('unknown type')
+
+
+def create_training_envs(env_type: str):
+    ko_df = load_dataset('./resources/KO.csv')
+    amzn_df = load_dataset('./resources/AMZN.csv')
+    window_size = 10
+
+    return [
+        # KO training envs
+        create_env(env_type, ko_df, window_size, (10, 120)),
+        create_env(env_type, ko_df, window_size, (120, 230)),
+        create_env(env_type, ko_df, window_size, (230, 350)),
+        create_env(env_type, ko_df, window_size, (1000, 1120)),
+        create_env(env_type, ko_df, window_size, (1300, 1400)),
+
+        # AMZN training envs
+        create_env(env_type, amzn_df, window_size, (10, 120)),
+        create_env(env_type, amzn_df, window_size, (120, 230)),
+        create_env(env_type, amzn_df, window_size, (230, 350)),
+        create_env(env_type, amzn_df, window_size, (1000, 1120)),
+        create_env(env_type, amzn_df, window_size, (1300, 1400)),
+    ]
+
+
+def create_testing_env(env_type: str):
+    ko_df = load_dataset('./resources/KO.csv')
+    window_size = 10
+    return create_env(env_type, ko_df, window_size, (2000, 2300))
 
 
 # ====================================== Parse arguments and extract params ======================================
@@ -128,9 +141,11 @@ eval_interval = 50
 
 
 # ====================================== Create environments ======================================
-dataset_file = './resources/KO.csv'
-train_py_env, eval_py_env = create_environments(env_type, dataset_file)
-train_env = tf_py_environment.TFPyEnvironment(train_py_env)
+train_py_envs = create_training_envs(env_type)
+train_env = tf_py_environment.TFPyEnvironment(train_py_envs[0])
+
+
+eval_py_env = create_testing_env(env_type)
 eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
 
 
@@ -222,6 +237,7 @@ def collect_episode(environment, policy, num_episodes):
 # except:
 #     pass
 
+
 # (Optional) Optimize by wrapping some of the code in a graph using TF function.
 agent.train = common.function(agent.train)
 
@@ -232,16 +248,18 @@ agent.train_step_counter.assign(0)
 avg_return = compute_avg_return(eval_env, agent.policy, num_eval_episodes)
 returns = [avg_return]
 
+train_py_env = train_py_envs[np.random.randint(len(train_py_envs))]
+
 for _ in range(num_iterations):
 
     # Collect a few steps and save to the replay buffer.
     collect_episode(
-      train_py_env, agent.collect_policy, collect_episodes_per_iteration)
+        train_py_env, agent.collect_policy, collect_episodes_per_iteration)
 
     # Sample a batch of data from the buffer and update the agent's network.
     iterator = iter(replay_buffer.as_dataset(sample_batch_size=1))
     trajectories, _ = next(iterator)
-    train_loss = agent.train(experience=trajectories)  
+    train_loss = agent.train(experience=trajectories)
 
     replay_buffer.clear()
 
@@ -256,6 +274,8 @@ for _ in range(num_iterations):
         print('step = {0}: Average Return = {1}'.format(step, avg_return))
         returns.append(avg_return)
 
+    # change environment
+    train_py_env = train_py_envs[np.random.randint(len(train_py_envs))]
 
 # ====================================== See Avg Return ======================================
 

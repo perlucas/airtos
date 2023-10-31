@@ -335,12 +335,11 @@ def train_eval(
             trajectories = replay_buffer.gather_all()
             return tf_agent.train(experience=trajectories)
 
-        if use_tf_functions:
-            # TODO(b/123828980): Enable once the cause for slowdown was identified.
-            collect_driver.run = common.function(
-                collect_driver.run, autograph=False)
-            tf_agent.train = common.function(tf_agent.train, autograph=False)
-            train_step = common.function(train_step)
+        # TODO(b/123828980): Enable once the cause for slowdown was identified.
+        collect_driver.run = common.function(
+            collect_driver.run, autograph=False)
+        tf_agent.train = common.function(tf_agent.train, autograph=False)
+        train_step = common.function(train_step)
 
         collect_time = 0
         train_time = 0
@@ -411,8 +410,15 @@ def train_eval(
                 train_time = 0
 
             if global_step_val % change_env_interval == 0:
-                collect_driver.env = tf_py_environment.TFPyEnvironment(
-                    get_train_py_env(env_name))
+                collect_driver = dynamic_episode_driver.DynamicEpisodeDriver(
+                    tf_py_environment.TFPyEnvironment(
+                        get_train_py_env(env_name)),
+                    collect_policy,
+                    observers=[replay_buffer.add_batch] + train_metrics,
+                    num_episodes=collect_episodes_per_iteration,
+                )
+                collect_driver.run = common.function(
+                    collect_driver.run, autograph=False)
 
         # One final eval before exiting.
         metric_utils.eager_compute(

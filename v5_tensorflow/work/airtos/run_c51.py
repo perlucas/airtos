@@ -121,36 +121,6 @@ def create_testing_env(env_type: str):
     return create_env(env_type, ko_df, window_size, (2000, 2300))
 
 
-def create_environments(env_type: str, filename: str):
-    df = load_dataset(filename)
-    window_size = 10
-    train_bounds = (10, 2000)
-    eval_bounds = (2000, 2500)
-
-    if env_type == 'macd':
-        train_env = MacdEnv(df=df, window_size=window_size,
-                            frame_bound=train_bounds)
-        eval_env = MacdEnv(df=df, window_size=window_size,
-                           frame_bound=eval_bounds)
-    elif env_type == 'rsi':
-        train_env = RsiEnv(df=df, window_size=window_size,
-                           frame_bound=train_bounds)
-        eval_env = RsiEnv(df=df, window_size=window_size,
-                          frame_bound=eval_bounds)
-    elif env_type == 'adx':
-        train_env = AdxEnv(df=df, window_size=window_size,
-                           frame_bound=train_bounds)
-        eval_env = AdxEnv(df=df, window_size=window_size,
-                          frame_bound=eval_bounds)
-    else:
-        train_env = MovingAverageEnv(
-            df=df, window_size=window_size, frame_bound=train_bounds)
-        eval_env = MovingAverageEnv(
-            df=df, window_size=window_size, frame_bound=eval_bounds)
-
-    return (train_env, eval_env)
-
-
 # ====================================== Parse arguments and extract params ======================================
 args = sys.argv[1:]
 
@@ -171,7 +141,8 @@ n_step_update = 2
 
 log_interval = 1000
 num_eval_episodes = 10
-eval_interval = 5000
+# eval_interval = 5000
+eval_interval = num_iterations / 100
 
 
 # ====================================== Create environments ======================================
