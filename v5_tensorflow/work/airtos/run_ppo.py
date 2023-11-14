@@ -137,22 +137,46 @@ def create_env(env_type: str, df, window_size, frame_bound):
 def create_training_envs(env_type: str):
     ko_df = load_dataset('./resources/KO.csv')
     amzn_df = load_dataset('./resources/AMZN.csv')
+    amd_df = load_dataset('./resources/AMD.csv')
+    pypl_df = load_dataset('./resources/PYPL.csv')
+    nflx_df = load_dataset('./resources/NFLX.csv')
     window_size = 10
 
     return [
         # KO training envs
         create_env(env_type, ko_df, window_size, (10, 120)),
         create_env(env_type, ko_df, window_size, (120, 230)),
-        create_env(env_type, ko_df, window_size, (230, 350)),
+        create_env(env_type, ko_df, window_size, (350, 470)),
         create_env(env_type, ko_df, window_size, (1000, 1120)),
-        create_env(env_type, ko_df, window_size, (1300, 1400)),
+        create_env(env_type, ko_df, window_size, (1700, 1820)),
 
         # AMZN training envs
         create_env(env_type, amzn_df, window_size, (10, 120)),
         create_env(env_type, amzn_df, window_size, (120, 230)),
-        create_env(env_type, amzn_df, window_size, (230, 350)),
+        create_env(env_type, amzn_df, window_size, (350, 470)),
         create_env(env_type, amzn_df, window_size, (1000, 1120)),
-        create_env(env_type, amzn_df, window_size, (1300, 1400)),
+        create_env(env_type, amzn_df, window_size, (1700, 1820)),
+
+        # AMD training envs
+        create_env(env_type, amd_df, window_size, (10, 120)),
+        create_env(env_type, amd_df, window_size, (120, 230)),
+        create_env(env_type, amd_df, window_size, (350, 470)),
+        create_env(env_type, amd_df, window_size, (1000, 1120)),
+        create_env(env_type, amd_df, window_size, (1700, 1820)),
+
+        # PYPL training envs
+        create_env(env_type, pypl_df, window_size, (10, 120)),
+        create_env(env_type, pypl_df, window_size, (120, 230)),
+        create_env(env_type, pypl_df, window_size, (350, 470)),
+        create_env(env_type, pypl_df, window_size, (1000, 1120)),
+        create_env(env_type, pypl_df, window_size, (1700, 1820)),
+
+        # NFLX training envs
+        create_env(env_type, nflx_df, window_size, (10, 120)),
+        create_env(env_type, nflx_df, window_size, (120, 230)),
+        create_env(env_type, nflx_df, window_size, (350, 470)),
+        create_env(env_type, nflx_df, window_size, (1000, 1120)),
+        create_env(env_type, nflx_df, window_size, (1700, 1820)),
     ]
 
 
@@ -185,7 +209,7 @@ def train_eval(
     # Params for eval
     num_eval_episodes=30,
     eval_interval=500,
-    change_env_interval=1000,
+    change_env_interval=500,
     # Params for summaries and logging
     train_checkpoint_interval=500,
     policy_checkpoint_interval=500,
@@ -345,9 +369,14 @@ def train_eval(
         train_time = 0
         timed_at_step = global_step.numpy()
 
+        best_return = 400
+        checkpoint_stored = False
+        agent_saver = policy_saver.PolicySaver(tf_agent.policy)
+
         avg_returns = []
         while environment_steps_metric.result() < num_environment_steps:
             global_step_val = global_step.numpy()
+
             if global_step_val % eval_interval == 0:
                 eval_result = metric_utils.eager_compute(
                     eval_metrics,
@@ -361,6 +390,14 @@ def train_eval(
                 logging.info('avg_ret: %f', eval_result['AverageReturn'])
                 print('avg_ret: %f', eval_result['AverageReturn'])
                 avg_returns.append(eval_result['AverageReturn'])
+
+                # Save model if new best average found
+                avg = eval_result['AverageReturn']
+                if avg > best_return:
+                    print(f'>>> Found better Avg Return: {avg}, storing model')
+                    best_return = avg
+                    checkpoint_stored = True
+                    agent_saver.save(root_dir + '/models/' + run_id)
 
             start_time = time.time()
             collect_driver.run()
@@ -450,7 +487,12 @@ def train_eval(
             plt.figure(figsize=(15, 8))
             eval_py_env.save_render(filename)
 
-        render_policy_eval(tf_agent.policy, root_dir + '/evals/' + run_id)
+        # Render only if stored model exists
+        if checkpoint_stored:
+            loaded_policy = tf.compat.v2.saved_model.load(
+                root_dir + '/models/' + run_id)
+            render_policy_eval(loaded_policy, root_dir + '/evals/' + run_id)
+            # render_policy_eval(tf_agent.policy, root_dir + '/evals/' + run_id)
 
 
 def main(_):

@@ -10,7 +10,7 @@ avgret_images_dir = files_folder + '/avgret'
 evals_images_dir = files_folder + '/evals'
 
 # Get all image files
-image_filenames = [f for f in listdir(avgret_images_dir) if isfile(join(avgret_images_dir, f))]
+image_filenames = [f for f in listdir(evals_images_dir) if isfile(join(evals_images_dir, f))]
 print('list of images: ', image_filenames)
 print('#images: ', len(image_filenames))
 

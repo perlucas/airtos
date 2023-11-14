@@ -16,7 +16,7 @@ from tf_agents.eval import metric_utils
 from tf_agents.metrics import tf_metrics
 from tf_agents.networks import sequential
 from tf_agents.policies import py_tf_eager_policy
-from tf_agents.policies import random_tf_policy
+from tf_agents.policies import random_tf_policy, policy_saver
 from tf_agents.replay_buffers import reverb_replay_buffer
 from tf_agents.replay_buffers import reverb_utils
 from tf_agents.trajectories import trajectory
@@ -102,22 +102,46 @@ def create_env(env_type: str, df, window_size, frame_bound):
 def create_training_envs(env_type: str):
     ko_df = load_dataset('./resources/KO.csv')
     amzn_df = load_dataset('./resources/AMZN.csv')
+    amd_df = load_dataset('./resources/AMD.csv')
+    pypl_df = load_dataset('./resources/PYPL.csv')
+    nflx_df = load_dataset('./resources/NFLX.csv')
     window_size = 10
 
     return [
         # KO training envs
         create_env(env_type, ko_df, window_size, (10, 120)),
         create_env(env_type, ko_df, window_size, (120, 230)),
-        create_env(env_type, ko_df, window_size, (230, 350)),
+        create_env(env_type, ko_df, window_size, (350, 470)),
         create_env(env_type, ko_df, window_size, (1000, 1120)),
-        create_env(env_type, ko_df, window_size, (1300, 1400)),
+        create_env(env_type, ko_df, window_size, (1700, 1820)),
 
         # AMZN training envs
         create_env(env_type, amzn_df, window_size, (10, 120)),
         create_env(env_type, amzn_df, window_size, (120, 230)),
-        create_env(env_type, amzn_df, window_size, (230, 350)),
+        create_env(env_type, amzn_df, window_size, (350, 470)),
         create_env(env_type, amzn_df, window_size, (1000, 1120)),
-        create_env(env_type, amzn_df, window_size, (1300, 1400)),
+        create_env(env_type, amzn_df, window_size, (1700, 1820)),
+
+        # AMD training envs
+        create_env(env_type, amd_df, window_size, (10, 120)),
+        create_env(env_type, amd_df, window_size, (120, 230)),
+        create_env(env_type, amd_df, window_size, (350, 470)),
+        create_env(env_type, amd_df, window_size, (1000, 1120)),
+        create_env(env_type, amd_df, window_size, (1700, 1820)),
+
+        # PYPL training envs
+        create_env(env_type, pypl_df, window_size, (10, 120)),
+        create_env(env_type, pypl_df, window_size, (120, 230)),
+        create_env(env_type, pypl_df, window_size, (350, 470)),
+        create_env(env_type, pypl_df, window_size, (1000, 1120)),
+        create_env(env_type, pypl_df, window_size, (1700, 1820)),
+
+        # NFLX training envs
+        create_env(env_type, nflx_df, window_size, (10, 120)),
+        create_env(env_type, nflx_df, window_size, (120, 230)),
+        create_env(env_type, nflx_df, window_size, (350, 470)),
+        create_env(env_type, nflx_df, window_size, (1000, 1120)),
+        create_env(env_type, nflx_df, window_size, (1700, 1820)),
     ]
 
 
@@ -141,7 +165,7 @@ batch_size = 64
 # learning_rate = 0.003
 log_interval = 1000
 num_eval_episodes = 10
-eval_interval = 10000
+eval_interval = 5000
 
 
 # ====================================== Create environments ======================================
@@ -279,51 +303,69 @@ agent.train_step_counter.assign(0)
 # Evaluate the agent's policy once before training.
 avg_return = compute_avg_return(eval_env, agent.policy, num_eval_episodes)
 returns = [avg_return]
+best_return = 100
+checkpoint_stored = False
 
-# TODO: assign initial env to train_py_env
+agent_saver = policy_saver.PolicySaver(agent.policy)
 
-current_env = 0
-train_py_env = train_py_envs[current_env]
+iterations_per_env = 10000
 
-iterations_per_env = int(np.floor(num_iterations / len(train_py_envs)))
-current_iteration = 0
-while current_iteration < num_iterations:
 
+def get_random_train_env():
+    idx = np.random.randint(len(train_py_envs))
+    return train_py_envs[idx]
+
+
+train_py_env = get_random_train_env()
+
+# Create a driver to collect experience.
+collect_driver = py_driver.PyDriver(
+    train_py_env,
+    py_tf_eager_policy.PyTFEagerPolicy(
+        agent.collect_policy, use_tf_function=True),
+    [rb_observer],
+    max_steps=collect_steps_per_iteration)
+
+for _ in range(num_iterations):
     # Reset the environment.
     time_step = train_py_env.reset()
 
-    # Create a driver to collect experience.
-    collect_driver = py_driver.PyDriver(
-        train_py_env,
-        py_tf_eager_policy.PyTFEagerPolicy(
-            agent.collect_policy, use_tf_function=True),
-        [rb_observer],
-        max_steps=collect_steps_per_iteration)
+    # Collect a few steps and save to the replay buffer.
+    time_step, _ = collect_driver.run(time_step)
 
-    for _ in range(iterations_per_env):
+    # Sample a batch of data from the buffer and update the agent's network.
+    experience, unused_info = next(iterator)
+    train_loss = agent.train(experience).loss
 
-        # Collect a few steps and save to the replay buffer.
-        time_step, _ = collect_driver.run(time_step)
+    step = agent.train_step_counter.numpy()
 
-        # Sample a batch of data from the buffer and update the agent's network.
-        experience, unused_info = next(iterator)
-        train_loss = agent.train(experience).loss
+    if step % log_interval == 0:
+        print('step = {0}: loss = {1}'.format(step, train_loss))
 
-        step = agent.train_step_counter.numpy()
+    if step % eval_interval == 0:
+        # Compute and store Avg. Ret.
+        avg_return = compute_avg_return(
+            eval_env, agent.policy, num_eval_episodes)
+        print('step = {0}: Average Return = {1}'.format(step, avg_return))
+        returns.append(avg_return)
 
-        if step % log_interval == 0:
-            print('step = {0}: loss = {1}'.format(step, train_loss))
+        # Store model checkpoint if better Avg. Ret.
+        if avg_return > best_return:
+            print(f'>>>> Got better Avg. Ret.: {avg_return}')
+            best_return = avg_return
+            agent_saver.save('./models/' + run_id)
+            checkpoint_stored = True
 
-        if step % eval_interval == 0:
-            avg_return = compute_avg_return(
-                eval_env, agent.policy, num_eval_episodes)
-            print('step = {0}: Average Return = {1}'.format(step, avg_return))
-            returns.append(avg_return)
+    if step % iterations_per_env == 0:
+        # Change training environment
+        train_py_env = get_random_train_env()
 
-        current_iteration += 1
-
-    current_env += 1
-    train_py_env = train_py_envs[current_env % len(train_py_envs)]
+        collect_driver = py_driver.PyDriver(
+            train_py_env,
+            py_tf_eager_policy.PyTFEagerPolicy(
+                agent.collect_policy, use_tf_function=True),
+            [rb_observer],
+            max_steps=collect_steps_per_iteration)
 
 
 # ====================================== See Avg Return ======================================
@@ -347,4 +389,7 @@ def render_policy_eval(policy, filename):
     eval_py_env.save_render(filename)
 
 
-render_policy_eval(agent.policy, './evals/' + run_id)
+# Evaluate best stored agent
+if checkpoint_stored:
+    loaded_policy = tf.compat.v2.saved_model.load('./models/' + run_id)
+    render_policy_eval(loaded_policy, './evals/' + run_id)
