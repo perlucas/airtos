@@ -21,7 +21,7 @@ At any given step, Airtos allows the agent to pick from any of the following act
 Which one to take based on the current trading signals? Well, that's where the AI agents enter the game to compute the best decision based on the current inputs and experience (deep learning algorithms leverage past experience to make the best out of it).
 
 ## Environment testing and rendering
-```
+``` python
 from airtos.envs import MacdEnv
 from airtos.utils import load_dataset
 from tf_agents.environments import tf_py_environment
